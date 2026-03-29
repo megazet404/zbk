@@ -25,10 +25,12 @@
             <logic>
                 Scans the directory tree. Computes hashes incrementally (based on mtime/size changes) to optimize performance. 
                 Updates the Index to reflect the exact current state of the source directory. 
+                Removes records for files and directories that no longer exist on the filesystem.
                 This stage establishes the 'Source of Truth' for subsequent operations.
             </logic>
             <invariant>
                 After completion, the Index accurately represents the filesystem at the root path.
+                All deleted files/directories are removed from the Index to maintain consistency.
             </invariant>
         </stage>
 

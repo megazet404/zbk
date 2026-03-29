@@ -197,6 +197,10 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
     
     root_path = root_path.resolve()
     
+
+    # Track all paths found on disk
+    found_paths = set()
+
     # Walk directory tree
     for dirpath, dirnames, filenames in os.walk(root_path, followlinks=False):
         dirpath = Path(dirpath)
@@ -215,6 +219,7 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
                 hash_=''
             )
             index.add_record(record)
+            found_paths.add(dir_record_path)
         
         log(f"[DIR] scanning: {rel_dir_str}/" if rel_dir_str else "[DIR] scanning: ./")
         index.flush()
@@ -267,8 +272,19 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
                 )
             
             index.add_record(record)
+            found_paths.add(rel_path)
             index.flush()
     
+
+    # Remove records for files/directories that no longer exist
+    paths_to_remove = []
+    for record_path in index.records.keys():
+        if record_path not in found_paths:
+            paths_to_remove.append(record_path)
+
+    for path in paths_to_remove:
+        index.remove_record(path)
+
     # Clear final status line
     sys.stderr.write('\n')
     sys.stderr.flush()
