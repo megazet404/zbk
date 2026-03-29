@@ -467,30 +467,73 @@ def _plan_rmdirs(
     dest_dirs = {r.relative_path for r in dest_index.records.values() if r.type == 'dir'}
     dirs_to_remove = dest_dirs - src_dirs
     
+    if not dirs_to_remove:
+        return []
+
     # Calculate final file paths after moves
-    # Start with dest files
     final_files = {r.relative_path for r in dest_index.records.values() if r.type == 'file'}
     for _, src_path, dst_path in mv_operations:
         if src_path in final_files:
             final_files.remove(src_path)
         final_files.add(dst_path)
     
-    # Sort by depth (deepest first)
+    # Mark all non-empty directories (ancestors of existing files)
+    non_empty_dirs = set()
+    for file_path in final_files:
+        # Accumulate all parent directories
+        current_path = file_path
+        while '/' in current_path:
+            parent_path = current_path.rsplit('/', 1)[0] + '/'
+            non_empty_dirs.add(parent_path)
+            current_path = parent_path.rstrip('/')
+        # Also mark root if needed, though usually represented as '' or '/'
+        # Depending on index convention (e.g., '.' or '')
+    
+    # Filter directories to remove
+    # Sort by depth (deepest first) for correct removal order
     sorted_dirs = sorted(dirs_to_remove, key=lambda x: x.count('/'), reverse=True)
     
     for dir_path in sorted_dirs:
-        # Check if any file remains inside
-        has_files = any(f.startswith(dir_path) for f in final_files)
-        
-        # Check if any subdir remains inside (from original dest_dirs)
-        # Since we process deepest first, subdirs would be removed already if empty.
-        # But we need to check if any subdir exists at all in dest_dirs
-        has_subdirs = any(
-            d.startswith(dir_path) and d != dir_path 
-            for d in dest_dirs
-        )
-        
-        if not has_files and not has_subdirs:
+        if dir_path not in non_empty_dirs:
+            # Double check: ensure no subdirs remain in dest_dirs that are NOT being removed
+            # Since we process deepest first, if a subdir exists in dest_dirs, 
+            # it should either be in dirs_to_remove (and processed later/earlier) or kept.
+            # If a subdir is kept, it would have added itself to non_empty_dirs via its own files 
+            # OR it is empty itself and will be removed.
+            # The ancestor marking covers files. What about empty subdirs that are NOT removed?
+            # If a subdir is in dest_dirs but NOT in dirs_to_remove, it means it exists in src_dirs.
+            # If it exists in src_dirs, it is NOT a candidate for removal.
+            # So we only care if a candidate dir contains files or kept subdirs.
+            # Kept subdirs are in src_dirs. They are not in dirs_to_remove.
+            # Do they mark parents as non-empty? No, only files do in the loop above.
+            # Correction: A kept subdir (present in src) makes its parent non-empty structurally.
+            pass 
+            
+    # Refined logic: A dir is empty if it has no files AND no subdirs (that are kept).
+    # Subdirs kept = present in src_dirs.
+    kept_dirs = src_dirs
+    
+    # Re-calculate non_empty based on files AND kept dirs
+    non_empty_dirs = set()
+    
+    # 1. Mark ancestors of files
+    for file_path in final_files:
+        current = file_path
+        while '/' in current:
+            parent = current.rsplit('/', 1)[0] + '/'
+            non_empty_dirs.add(parent)
+            current = parent.rstrip('/')
+            
+    # 2. Mark ancestors of kept directories
+    for dir_path in kept_dirs:
+        current = dir_path
+        while '/' in current:
+            parent = current.rsplit('/', 1)[0] + '/'
+            non_empty_dirs.add(parent)
+            current = parent.rstrip('/')
+            
+    for dir_path in sorted_dirs:
+        if dir_path not in non_empty_dirs:
             operations.append(('rmdir', dir_path, ''))
             
     return operations
