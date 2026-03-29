@@ -346,65 +346,83 @@ def cmd_update_index(args):
 
 def plan_reorganize(src_index: Index, dest_index: Index) -> List[Tuple[str, str, str]]:
     """
-    Plan reorganization operations.
+    Plan reorganization operations based on content identity.
     Returns list of (operation, path_from, path_to).
     """
     operations = []
     
-    # Build hash-to-records mapping for dest
-    dest_by_hash: Dict[str, List[IndexRecord]] = {}
+    # Build hash-to-paths mapping for source and destination
+    src_by_hash: Dict[str, Set[str]] = {}
+    dest_by_hash: Dict[str, Set[str]] = {}
+    
+    for record in src_index.records.values():
+        if record.type == 'file' and record.hash:
+            if record.hash not in src_by_hash:
+                src_by_hash[record.hash] = set()
+            src_by_hash[record.hash].add(record.relative_path)
+            
     for record in dest_index.records.values():
         if record.type == 'file' and record.hash:
             if record.hash not in dest_by_hash:
-                dest_by_hash[record.hash] = []
-            dest_by_hash[record.hash].append(record)
+                dest_by_hash[record.hash] = set()
+            dest_by_hash[record.hash].add(record.relative_path)
     
-    # Track which dest records have been assigned
-    already_moved_paths = set()
+    # Process only hashes present in both source and destination
+    common_hashes = set(src_by_hash.keys()) & set(dest_by_hash.keys())
     
-    # Find files that need to be moved (exist in src but at different path in dest)
-    for src_record in src_index.records.values():
-        if src_record.type != 'file' or not src_record.hash:
-            continue
+    mv_ops = []
+    
+    for file_hash in common_hashes:
+        src_paths = src_by_hash[file_hash]
+        dest_paths = dest_by_hash[file_hash]
         
-        target_path = src_record.relative_path
-        dest_record = dest_index.get_record(target_path)
+        # Identify files already in correct place (intersection)
+        correct_paths = src_paths & dest_paths
         
-        if dest_record and dest_record.hash == src_record.hash:
-            # Already at correct path
-            continue
+        # Identify files needing move (difference)
+        needed_paths = src_paths - correct_paths  # Paths where file should be
+        available_paths = dest_paths - correct_paths  # Paths where file currently is
         
-        # Look for file with matching hash in dest
-        mv_from_candidates = dest_by_hash.get(src_record.hash, [])
-        for mv_from_candidate in mv_from_candidates:
-            if mv_from_candidate.relative_path in already_moved_paths:
+        # Plan moves from available to needed
+        for target_path in needed_paths:
+            if not available_paths:
+                break
+                
+            # Check for conflict at target path
+            existing_record = dest_index.get_record(target_path)
+            if existing_record and existing_record.hash != file_hash:
+                # Conflict: different file exists at target path. Skip move.
+                # Synchronization will be handled by 'push' stage (copy).
                 continue
             
-            mv_from_path = mv_from_candidate.relative_path
-            if mv_from_path != target_path:
-                # Need to move
-                operations.append(('mv', mv_from_path, target_path))
-                already_moved_paths.add(mv_from_path)
-            break
+            # Select a source path to move
+            source_path = available_paths.pop()
+            mv_ops.append(('mv', source_path, target_path))
     
-    # Find directories to remove (in dest but not in src)
+    # Plan directory removals
     src_dirs = {r.relative_path for r in src_index.records.values() if r.type == 'dir'}
     dest_dirs = {r.relative_path for r in dest_index.records.values() if r.type == 'dir'}
-    
     dirs_to_remove = sorted(dest_dirs - src_dirs, key=lambda x: x.count('/'), reverse=True)
+    
+    rmdir_ops = []
     for dir_path in dirs_to_remove:
-        # Check if directory is empty (no files or subdirs under it)
+        # Check if directory is empty
         has_contents = False
         for record in dest_index.records.values():
             if record.relative_path.startswith(dir_path) and record.relative_path != dir_path:
                 has_contents = True
                 break
-        
         if not has_contents:
-            operations.append(('rmdir', dir_path, ''))
+            rmdir_ops.append(('rmdir', dir_path, ''))
     
+    # Sort operations for determinism
+    # Sort mv by source path (path_from)
+    mv_ops.sort(key=lambda x: x[1])
+    # Sort rmdir by depth (already sorted above, but explicit for clarity)
+    rmdir_ops.sort(key=lambda x: x[1].count('/'), reverse=True)
+    
+    operations = mv_ops + rmdir_ops
     return operations
-
 
 def execute_reorganize(operations: List[Tuple[str, str, str]], 
                        dest_index: Index, dest_root: Path,
