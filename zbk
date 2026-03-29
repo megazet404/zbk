@@ -226,6 +226,10 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
         
         # Process files
         for filename in filenames:
+            # Exclude the index file itself at the root level
+            if filename == INDEX_FILENAME and dirpath == root_path:
+                continue
+
             file_path = dirpath / filename
             
             # Skip symlinks
