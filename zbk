@@ -344,85 +344,179 @@ def cmd_update_index(args):
         return 1
 
 
+def _build_hash_maps(index: Index) -> Dict[str, Set[str]]:
+    """Build mapping from hash to set of relative paths for files."""
+    hash_map: Dict[str, Set[str]] = {}
+    for record in index.records.values():
+        if record.type == 'file' and record.hash:
+            if record.hash not in hash_map:
+                hash_map[record.hash] = set()
+            hash_map[record.hash].add(record.relative_path)
+    return hash_map
+
+def _plan_moves(
+    src_by_hash: Dict[str, Set[str]],
+    dest_by_hash: Dict[str, Set[str]],
+    dest_index: Index
+) -> List[Tuple[str, str, str]]:
+    """
+    Plan move operations iteratively to resolve path dependencies.
+    Returns list of ('mv', src_path, dst_path).
+    """
+    operations = []
+    
+    # Identify common hashes
+    common_hashes = set(src_by_hash.keys()) & set(dest_by_hash.keys())
+    
+    # Working sets: paths needed in src (target) and available in dest (source)
+    # Only paths not already in correct place
+    src_needed: Dict[str, Set[str]] = {}
+    dest_available: Dict[str, Set[str]] = {}
+    
+    for h in common_hashes:
+        src_paths = src_by_hash[h]
+        dest_paths = dest_by_hash[h]
+        correct_paths = src_paths & dest_paths
+        
+        src_needed[h] = src_paths - correct_paths
+        dest_available[h] = dest_paths - correct_paths
+    
+    # Track planned occupancy: path -> hash (None if path will be empty)
+    # Initialize with current dest state
+    occupancy: Dict[str, Optional[str]] = {}
+    for record in dest_index.records.values():
+        if record.type == 'file':
+            occupancy[record.relative_path] = record.hash
+    
+    max_passes = len(occupancy) + 10  # Safety limit
+    pass_count = 0
+    
+    while pass_count < max_passes:
+        ops_added = 0
+        
+        for h in list(common_hashes):
+            needed = src_needed.get(h, set())
+            available = dest_available.get(h, set())
+            
+            if not needed or not available:
+                continue
+            
+            # Sort for determinism within pass
+            needed_sorted = sorted(needed)
+            available_sorted = sorted(available)
+            
+            for target_path in needed_sorted:
+                if not available:
+                    break
+                
+                # Check conflict at target
+                current_hash = occupancy.get(target_path)
+                if current_hash is not None and current_hash != h:
+                    # Occupied by different file. Skip for now.
+                    continue
+                
+                # Find source to move
+                # Prefer source that doesn't conflict with other needs? 
+                # Simple strategy: take first available
+                source_path = available_sorted.pop(0) 
+                # Note: popping from sorted list requires re-management or use set pop. 
+                # Using set pop for efficiency, determinism handled by outer sort if needed.
+                # To maintain determinism with set, we iterate sorted available.
+                # Let's pick the first one from available_sorted that is still in 'available' set.
+                
+                # Re-fetch valid source from set
+                actual_source = None
+                for s in sorted(available):
+                    actual_source = s
+                    break
+                
+                if actual_source is None:
+                    break
+                
+                # Plan move
+                operations.append(('mv', actual_source, target_path))
+                
+                # Update state
+                occupancy[actual_source] = None  # Freed
+                occupancy[target_path] = h       # Occupied
+                
+                available.remove(actual_source)
+                needed.remove(target_path)
+                
+                ops_added += 1
+        
+        if ops_added == 0:
+            break
+            
+        pass_count += 1
+    
+    return operations
+
+def _plan_rmdirs(
+    src_index: Index,
+    dest_index: Index,
+    mv_operations: List[Tuple[str, str, str]]
+) -> List[Tuple[str, str, str]]:
+    """
+    Plan removal of empty directories present in dest but not in src.
+    Considers planned moves for emptiness check.
+    """
+    operations = []
+    
+    src_dirs = {r.relative_path for r in src_index.records.values() if r.type == 'dir'}
+    dest_dirs = {r.relative_path for r in dest_index.records.values() if r.type == 'dir'}
+    dirs_to_remove = dest_dirs - src_dirs
+    
+    # Calculate final file paths after moves
+    # Start with dest files
+    final_files = {r.relative_path for r in dest_index.records.values() if r.type == 'file'}
+    for _, src_path, dst_path in mv_operations:
+        if src_path in final_files:
+            final_files.remove(src_path)
+        final_files.add(dst_path)
+    
+    # Sort by depth (deepest first)
+    sorted_dirs = sorted(dirs_to_remove, key=lambda x: x.count('/'), reverse=True)
+    
+    for dir_path in sorted_dirs:
+        # Check if any file remains inside
+        has_files = any(f.startswith(dir_path) for f in final_files)
+        
+        # Check if any subdir remains inside (from original dest_dirs)
+        # Since we process deepest first, subdirs would be removed already if empty.
+        # But we need to check if any subdir exists at all in dest_dirs
+        has_subdirs = any(
+            d.startswith(dir_path) and d != dir_path 
+            for d in dest_dirs
+        )
+        
+        if not has_files and not has_subdirs:
+            operations.append(('rmdir', dir_path, ''))
+            
+    return operations
+
 def plan_reorganize(src_index: Index, dest_index: Index) -> List[Tuple[str, str, str]]:
     """
     Plan reorganization operations based on content identity.
     Returns list of (operation, path_from, path_to).
     """
-    operations = []
+    # Build hash maps
+    src_by_hash = _build_hash_maps(src_index)
+    dest_by_hash = _build_hash_maps(dest_index)
     
-    # Build hash-to-paths mapping for source and destination
-    src_by_hash: Dict[str, Set[str]] = {}
-    dest_by_hash: Dict[str, Set[str]] = {}
-    
-    for record in src_index.records.values():
-        if record.type == 'file' and record.hash:
-            if record.hash not in src_by_hash:
-                src_by_hash[record.hash] = set()
-            src_by_hash[record.hash].add(record.relative_path)
-            
-    for record in dest_index.records.values():
-        if record.type == 'file' and record.hash:
-            if record.hash not in dest_by_hash:
-                dest_by_hash[record.hash] = set()
-            dest_by_hash[record.hash].add(record.relative_path)
-    
-    # Process only hashes present in both source and destination
-    common_hashes = set(src_by_hash.keys()) & set(dest_by_hash.keys())
-    
-    mv_ops = []
-    
-    for file_hash in common_hashes:
-        src_paths = src_by_hash[file_hash]
-        dest_paths = dest_by_hash[file_hash]
-        
-        # Identify files already in correct place (intersection)
-        correct_paths = src_paths & dest_paths
-        
-        # Identify files needing move (difference)
-        needed_paths = src_paths - correct_paths  # Paths where file should be
-        available_paths = dest_paths - correct_paths  # Paths where file currently is
-        
-        # Plan moves from available to needed
-        for target_path in needed_paths:
-            if not available_paths:
-                break
-                
-            # Check for conflict at target path
-            existing_record = dest_index.get_record(target_path)
-            if existing_record and existing_record.hash != file_hash:
-                # Conflict: different file exists at target path. Skip move.
-                # Synchronization will be handled by 'push' stage (copy).
-                continue
-            
-            # Select a source path to move
-            source_path = available_paths.pop()
-            mv_ops.append(('mv', source_path, target_path))
+    # Plan moves
+    mv_ops = _plan_moves(src_by_hash, dest_by_hash, dest_index)
     
     # Plan directory removals
-    src_dirs = {r.relative_path for r in src_index.records.values() if r.type == 'dir'}
-    dest_dirs = {r.relative_path for r in dest_index.records.values() if r.type == 'dir'}
-    dirs_to_remove = sorted(dest_dirs - src_dirs, key=lambda x: x.count('/'), reverse=True)
+    rmdir_ops = _plan_rmdirs(src_index, dest_index, mv_ops)
     
-    rmdir_ops = []
-    for dir_path in dirs_to_remove:
-        # Check if directory is empty
-        has_contents = False
-        for record in dest_index.records.values():
-            if record.relative_path.startswith(dir_path) and record.relative_path != dir_path:
-                has_contents = True
-                break
-        if not has_contents:
-            rmdir_ops.append(('rmdir', dir_path, ''))
-    
-    # Sort operations for determinism
-    # Sort mv by source path (path_from)
+    # Sort operations
+    # mv: by source path (path_from)
     mv_ops.sort(key=lambda x: x[1])
-    # Sort rmdir by depth (already sorted above, but explicit for clarity)
+    # rmdir: by depth (already sorted in helper, but ensure consistency)
     rmdir_ops.sort(key=lambda x: x[1].count('/'), reverse=True)
     
-    operations = mv_ops + rmdir_ops
-    return operations
+    return mv_ops + rmdir_ops
 
 def execute_reorganize(operations: List[Tuple[str, str, str]], 
                        dest_index: Index, dest_root: Path,
