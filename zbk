@@ -445,87 +445,65 @@ def _plan_moves(
     return operations
 
 def _plan_rmdirs(
-    src_index: Index,
-    dest_index: Index,
-    mv_operations: List[Tuple[str, str, str]]
+    target_index: Index,
+    current_index: Index,
+    planned_moves: List[Tuple[str, str, str]]
 ) -> List[Tuple[str, str, str]]:
     """
-    Plan removal of empty directories present in dest but not in src.
-    Considers planned moves for emptiness check.
+    Plan the removal of directories that exist in the current destination 
+    but are not present in the target index. 
+    Only truly empty directories (after planned moves) are removed.
     """
-    operations = []
+    operations: List[Tuple[str, str, str]] = []
     
-    src_dirs = {r.relative_path for r in src_index.records.values() if r.type == 'dir'}
-    dest_dirs = {r.relative_path for r in dest_index.records.values() if r.type == 'dir'}
-    dirs_to_remove = dest_dirs - src_dirs
+    # Define directory sets based on Target (desired) and Current (actual) state
+    target_dirs = {r.relative_path for r in target_index.records.values() if r.type == 'dir'}
+    current_dirs = {r.relative_path for r in current_index.records.values() if r.type == 'dir'}
     
-    if not dirs_to_remove:
+    # Candidates for removal: directories in current that are NOT in target
+    candidate_rmdirs = current_dirs - target_dirs
+    
+    if not candidate_rmdirs:
         return []
 
-    # Calculate final file paths after moves
-    final_files = {r.relative_path for r in dest_index.records.values() if r.type == 'file'}
-    for _, src_path, dst_path in mv_operations:
-        if src_path in final_files:
-            final_files.remove(src_path)
-        final_files.add(dst_path)
+    # Calculate the predicted state of files after all 'mv' operations are executed
+    predicted_files = {r.relative_path for r in current_index.records.values() if r.type == 'file'}
+    for _, src_path, dst_path in planned_moves:
+        if src_path in predicted_files:
+            predicted_files.remove(src_path)
+        predicted_files.add(dst_path)
     
-    # Mark all non-empty directories (ancestors of existing files)
-    non_empty_dirs = set()
-    for file_path in final_files:
-        # Accumulate all parent directories
-        current_path = file_path
-        while '/' in current_path:
-            parent_path = current_path.rsplit('/', 1)[0] + '/'
-            non_empty_dirs.add(parent_path)
-            current_path = parent_path.rstrip('/')
-        # Also mark root if needed, though usually represented as '' or '/'
-        # Depending on index convention (e.g., '.' or '')
+    # A directory is "occupied" and cannot be removed if:
+    # 1. It will contain a file after moves.
+    # 2. It is a required directory in the target state.
+    occupied_dirs: Set[str] = set()
     
-    # Filter directories to remove
-    # Sort by depth (deepest first) for correct removal order
-    sorted_dirs = sorted(dirs_to_remove, key=lambda x: x.count('/'), reverse=True)
-    
-    for dir_path in sorted_dirs:
-        if dir_path not in non_empty_dirs:
-            # Double check: ensure no subdirs remain in dest_dirs that are NOT being removed
-            # Since we process deepest first, if a subdir exists in dest_dirs, 
-            # it should either be in dirs_to_remove (and processed later/earlier) or kept.
-            # If a subdir is kept, it would have added itself to non_empty_dirs via its own files 
-            # OR it is empty itself and will be removed.
-            # The ancestor marking covers files. What about empty subdirs that are NOT removed?
-            # If a subdir is in dest_dirs but NOT in dirs_to_remove, it means it exists in src_dirs.
-            # If it exists in src_dirs, it is NOT a candidate for removal.
-            # So we only care if a candidate dir contains files or kept subdirs.
-            # Kept subdirs are in src_dirs. They are not in dirs_to_remove.
-            # Do they mark parents as non-empty? No, only files do in the loop above.
-            # Correction: A kept subdir (present in src) makes its parent non-empty structurally.
-            pass 
-            
-    # Refined logic: A dir is empty if it has no files AND no subdirs (that are kept).
-    # Subdirs kept = present in src_dirs.
-    kept_dirs = src_dirs
-    
-    # Re-calculate non_empty based on files AND kept dirs
-    non_empty_dirs = set()
-    
-    # 1. Mark ancestors of files
-    for file_path in final_files:
-        current = file_path
+    # Helper to mark all ancestors of a path as occupied
+    def mark_ancestors(path: str):
+        current = path
         while '/' in current:
+            # Extract parent (e.g., "a/b/c.txt" -> "a/b/")
             parent = current.rsplit('/', 1)[0] + '/'
-            non_empty_dirs.add(parent)
+            if parent in occupied_dirs:
+                break # Optimization: ancestors already marked
+            occupied_dirs.add(parent)
             current = parent.rstrip('/')
+
+    # 1. Mark ancestors of predicted files
+    for file_path in predicted_files:
+        mark_ancestors(file_path)
             
-    # 2. Mark ancestors of kept directories
-    for dir_path in kept_dirs:
-        current = dir_path
-        while '/' in current:
-            parent = current.rsplit('/', 1)[0] + '/'
-            non_empty_dirs.add(parent)
-            current = parent.rstrip('/')
+    # 2. Mark ancestors of directories we intend to keep
+    for dir_path in target_dirs:
+        occupied_dirs.add(dir_path) # The dir itself is occupied
+        mark_ancestors(dir_path)    # And all its parents
             
-    for dir_path in sorted_dirs:
-        if dir_path not in non_empty_dirs:
+    # Sort candidates by depth (deepest first) to allow nested rmdir calls
+    sorted_candidates = sorted(candidate_rmdirs, key=lambda x: x.count('/'), reverse=True)
+    
+    for dir_path in sorted_candidates:
+        if dir_path not in occupied_dirs:
+            # If the directory is not required and has no predicted content, remove it
             operations.append(('rmdir', dir_path, ''))
             
     return operations
