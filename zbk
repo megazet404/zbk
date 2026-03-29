@@ -375,16 +375,16 @@ def plan_reorganize(src_index: Index, dest_index: Index) -> List[Tuple[str, str,
             continue
         
         # Look for file with matching hash in dest
-        candidates = dest_by_hash.get(src_record.hash, [])
-        for candidate in candidates:
-            if candidate.relative_path in used_dest_paths:
+        dest_candidates = dest_by_hash.get(src_record.hash, [])
+        for dest_candidate in dest_candidates:
+            if dest_candidate.relative_path in used_dest_paths:
                 continue
             
-            old_path = candidate.relative_path
-            if old_path != src_path:
+            dest_old_path = dest_candidate.relative_path
+            if dest_old_path != src_path:
                 # Need to move
-                operations.append(('mv', old_path, src_path))
-                used_dest_paths.add(old_path)
+                operations.append(('mv', dest_old_path, src_path))
+                used_dest_paths.add(dest_old_path)
             break
     
     # Find directories to remove (in dest but not in src)
