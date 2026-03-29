@@ -83,21 +83,8 @@ class Index:
         self._flush_timer = 0.0
         self._modified = False
     
-    def load(self, skip_tmp: bool = False) -> bool:
-        """Load index from file. Returns True if file existed.
-        
-        Args:
-            skip_tmp: If True, don't try to load .tmp file (used by update-index).
-        """
-        tmp_path = self.index_path.with_suffix(self.index_path.suffix + TMP_SUFFIX)
-        
-        # Try to load tmp file first (crash recovery), unless skip_tmp is set
-        if not skip_tmp and tmp_path.exists():
-            self._load_from_file(tmp_path)
-            # Promote tmp to main file
-            self._atomic_write()
-            return True
-        
+    def load(self) -> bool:
+        """Load index from file. Returns True if file existed."""
         if self.index_path.exists():
             self._load_from_file(self.index_path)
             return True
@@ -326,8 +313,7 @@ def cmd_update_index(args):
         return 1
     
     index = Index(index_path, args.delimiter)
-    # Load only from index.csv, skip .tmp file (may be incomplete after crash)
-    index.load(skip_tmp=True)
+    index.load()
     
     try:
         scan_directory(root_path, index, args.force, args.delimiter)
