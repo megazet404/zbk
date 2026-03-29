@@ -728,7 +728,7 @@ def main():
     update_parser = subparsers.add_parser('update-index', 
                                           help='Build index of directory metadata')
     update_parser.add_argument('--root', required=True,
-                               help='Path to root directory to index')
+                               help='Path to index to be updated')
     update_parser.add_argument('-f', '--force', action='store_true',
                                help='Force recalculation of all hashes')
     update_parser.add_argument('--delimiter', default=DEFAULT_DELIMITER,
