@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<semantic_documentation>
+    <meta>
+        <target_agent>LLM</target_agent>
+        <purpose>Synchronization of human intent with code semantics</purpose>
+        <language>English</language>
+        <scope>Incremental Backup Utility (zbk)</scope>
+    </meta>
+
+    <conceptual_model>
+        <description>
+            The system implements a state-based synchronization model rather than a simple file copy. 
+            The filesystem is treated as a mutable projection of an immutable index state. 
+            Data integrity is verified via content hashing (SHA-256), decoupling physical location from logical identity.
+        </description>
+        <core_abstraction>
+            The 'Index' (index.csv) represents the authoritative state of a directory tree. 
+            Operations modify the filesystem to match the Index, or update the Index to match the filesystem.
+        </core_abstraction>
+    </conceptual_model>
+
+    <pipeline_semantics>
+        <stage id="1" name="update-index">
+            <intent>Capture current filesystem state into the Index.</intent>
+            <logic>
+                Scans the directory tree. Computes hashes incrementally (based on mtime/size changes) to optimize performance. 
+                Updates the Index to reflect the exact current state of the source directory. 
+                This stage establishes the 'Source of Truth' for subsequent operations.
+            </logic>
+            <invariant>
+                After completion, the Index accurately represents the filesystem at the root path.
+            </invariant>
+        </stage>
+
+        <stage id="2" name="reorganize">
+            <intent>Align destination structure with source structure without data transfer.</intent>
+            <logic>
+                Compares Source Index (desired structure) with Destination Index (current backup state). 
+                Identifies files with matching hashes but divergent paths. 
+                Plans move (mv) operations to align paths. Identifies empty directories for removal. 
+                Does not copy data; only rearranges existing data blocks based on content identity.
+            </logic>
+            <constraint>
+                Operates solely on the Destination. Requires Destination Index to be reasonably current.
+            </constraint>
+        </stage>
+
+        <stage id="3" name="push">
+            <intent>Synchronize destination content with source content.</intent>
+            <logic>
+                Compares Source Index and Destination Index. 
+                Identifies missing files (copy), changed files (update), and removed files (delete). 
+                Ensures Destination filesystem matches Source Index state exactly. 
+                Handles metadata synchronization (mtime) even if content hash matches.
+            </logic>
+            <constraint>
+                Transfers data only when necessary (hash mismatch or missing file).
+            </constraint>
+        </stage>
+    </pipeline_semantics>
+
+    <state_management>
+        <index_structure>
+            <field name="type">Distinguishes between 'file' and 'dir' for structural integrity.</field>
+            <field name="relative_path">Logical location relative to root. Uses forward slashes for consistency.</field>
+            <field name="mtime">Modification time for change detection optimization.</field>
+            <field name="size">File size for change detection optimization.</field>
+            <field name="hash">SHA-256 content hash. Primary key for data identity.</field>
+        </index_structure>
+        <persistence>
+            <mechanism>Atomic writes (write to temp file + rename).</mechanism>
+            <guarantee>Index corruption prevention during power loss or crashes.</guarantee>
+            <recovery>Partial writes are discarded; previous valid index remains intact.</recovery>
+        </persistence>
+        <consistency>
+            <rule>Index is flushed periodically during long operations to minimize data loss on interruption.</rule>
+            <rule>Operations are planned fully before execution to allow user confirmation.</rule>
+        </consistency>
+    </state_management>
+
+    <invariants>
+        <safety>
+            <constraint>Destructive operations (rm, rmdir) require explicit user confirmation.</constraint>
+            <constraint>Source Index is treated as read-only during reorganize/push.</constraint>
+            <constraint>Symlinks are ignored to prevent recursion loops or security issues.</constraint>
+        </safety>
+        <idempotency>
+            <constraint>Running 'push' twice without intermediate changes results in no operations on the second run.</constraint>
+            <constraint>Running 'update-index' twice without filesystem changes results in identical Index state.</constraint>
+        </idempotency>
+        <data_integrity>
+            <constraint>File content is never modified in place; only copied or moved.</constraint>
+            <constraint>Hash mismatches trigger full re-copy, ensuring bit-perfect synchronization.</constraint>
+        </data_integrity>
+    </invariants>
+
+    <llm_interpretation_guidelines>
+        <modification_context>
+            When analyzing or modifying this code, preserve the separation between Index state and Filesystem state. 
+            Do not merge 'reorganize' and 'push' logic; they serve distinct semantic purposes (topology vs. content).
+        </modification_context>
+        <error_handling>
+            Errors during file operations are logged but do not halt the entire batch (best-effort execution within a run). 
+            Index updates are flushed despite errors to maintain state consistency for resumed operations.
+        </error_handling>
+        <performance_optimization>
+            Hash computation is the bottleneck. Any optimization must preserve the mtime/size check shortcut. 
+            Do not remove the incremental hash logic unless explicitly requested, as it is critical for large datasets.
+        </performance_optimization>
+        <intent_preservation>
+            The utility is designed for MSYS2/MINGW Windows environments. Path handling (forward slashes, resolve) must remain compatible with this context. 
+            Do not introduce OS-specific dependencies that break cross-platform path logic within the intended environment.
+        </intent_preservation>
+    </llm_interpretation_guidelines>
+</semantic_documentation>
