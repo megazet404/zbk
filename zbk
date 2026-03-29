@@ -462,7 +462,12 @@ def _plan_rmdirs(
     
     # Candidates for removal: directories in current that are NOT in target
     candidate_rmdirs = current_dirs - target_dirs
-    
+
+    # PROTECT ROOT: ensure we never plan to delete the base directory
+    candidate_rmdirs.discard('')
+    candidate_rmdirs.discard('/')
+    candidate_rmdirs.discard('.')
+
     if not candidate_rmdirs:
         return []
 
