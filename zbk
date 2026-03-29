@@ -361,90 +361,82 @@ def _plan_moves(
 ) -> List[Tuple[str, str, str]]:
     """
     Plan move operations iteratively to resolve path dependencies.
-    Returns list of ('mv', src_path, dst_path).
-    """
-    operations = []
+    This function determines how to move existing files in the destination 
+    to their new required paths based on content hashes.
     
-    # Identify common hashes
+    Returns a list of ('mv', source_path, target_path).
+    """
+    operations: List[Tuple[str, str, str]] = []
+    
+    # Identify hashes present in both source and destination
     common_hashes = set(src_by_hash.keys()) & set(dest_by_hash.keys())
     
-    # Working sets: paths needed in src (target) and available in dest (source)
-    # Only paths not already in correct place
-    src_needed: Dict[str, Set[str]] = {}
-    dest_available: Dict[str, Set[str]] = {}
+    # Working sets: paths where files should go (targets) 
+    # and where they currently exist (available_sources)
+    targets: Dict[str, Set[str]] = {}
+    available_sources: Dict[str, Set[str]] = {}
     
     for h in common_hashes:
-        src_paths = src_by_hash[h]
-        dest_paths = dest_by_hash[h]
-        correct_paths = src_paths & dest_paths
+        target_paths = src_by_hash[h]
+        current_paths = dest_by_hash[h]
         
-        src_needed[h] = src_paths - correct_paths
-        dest_available[h] = dest_paths - correct_paths
+        # Files already in the correct location are excluded
+        correct_paths = target_paths & current_paths
+        
+        targets[h] = target_paths - correct_paths
+        available_sources[h] = current_paths - correct_paths
     
-    # Track planned occupancy: path -> hash (None if path will be empty)
-    # Initialize with current dest state
+    # Track current occupancy: path -> hash (None if path is empty/freed)
+    # This map helps avoid moving a file to a path occupied by another file
     occupancy: Dict[str, Optional[str]] = {}
-    for record in dest_index.records.values():
-        if record.type == 'file':
-            occupancy[record.relative_path] = record.hash
+    for dest_record in dest_index.records.values():
+        if dest_record.type == 'file':
+            occupancy[dest_record.relative_path] = dest_record.hash
     
-    max_passes = len(occupancy) + 10  # Safety limit
+    # Safety limit to prevent infinite loops in case of circular dependencies
+    max_passes = len(occupancy) + 10
     pass_count = 0
     
     while pass_count < max_passes:
         ops_added = 0
         
         for h in list(common_hashes):
-            needed = src_needed.get(h, set())
-            available = dest_available.get(h, set())
+            target_set = targets.get(h, set())
+            source_set = available_sources.get(h, set())
             
-            if not needed or not available:
+            if not target_set or not source_set:
                 continue
             
-            # Sort for determinism within pass
-            needed_sorted = sorted(needed)
-            available_sorted = sorted(available)
-            
-            for target_path in needed_sorted:
-                if not available:
+            # Sort target paths for deterministic behavior across runs
+            for target_path in sorted(target_set):
+                if not source_set:
                     break
                 
-                # Check conflict at target
-                current_hash = occupancy.get(target_path)
-                if current_hash is not None and current_hash != h:
-                    # Occupied by different file. Skip for now.
+                # Check for conflicts at the target location
+                current_occupant = occupancy.get(target_path)
+                if current_occupant is not None and current_occupant != h:
+                    # Target path is currently occupied by a different file.
+                    # We must wait for that file to be moved or deleted first.
                     continue
                 
-                # Find source to move
-                # Prefer source that doesn't conflict with other needs? 
-                # Simple strategy: take first available
-                source_path = available_sorted.pop(0) 
-                # Note: popping from sorted list requires re-management or use set pop. 
-                # Using set pop for efficiency, determinism handled by outer sort if needed.
-                # To maintain determinism with set, we iterate sorted available.
-                # Let's pick the first one from available_sorted that is still in 'available' set.
+                # Pick a source file to move (min() ensures determinism)
+                source_path = min(source_set)
                 
-                # Re-fetch valid source from set
-                actual_source = None
-                for s in sorted(available):
-                    actual_source = s
-                    break
+                # Plan the move operation
+                operations.append(('mv', source_path, target_path))
                 
-                if actual_source is None:
-                    break
+                # Update current occupancy state
+                occupancy[source_path] = None  # Original path is now free
+                occupancy[target_path] = h     # Target path is now occupied by this hash
                 
-                # Plan move
-                operations.append(('mv', actual_source, target_path))
-                
-                # Update state
-                occupancy[actual_source] = None  # Freed
-                occupancy[target_path] = h       # Occupied
-                
-                available.remove(actual_source)
-                needed.remove(target_path)
+                # Remove from working sets
+                source_set.remove(source_path)
+                target_set.remove(target_path)
                 
                 ops_added += 1
         
+        # If no moves were planned in this pass, we are done 
+        # (or blocked by circular dependencies handled elsewhere)
         if ops_added == 0:
             break
             
