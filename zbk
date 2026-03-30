@@ -392,34 +392,34 @@ def _plan_moves(
         available_sources[h] = current_paths - correct_paths
 
     # Track current occupancy: path -> hash (None if path is empty/freed)
-    # This map helps avoid moving a file to a path occupied by another file
     occupancy: Dict[str, Optional[str]] = {}
     for dest_record in dest_index.records.values():
         if dest_record.type == 'file':
             occupancy[dest_record.relative_path] = dest_record.hash
 
-    # Create a sorted list of all pending sources to enforce source_path ordering
-    pending_sources: List[Tuple[str, str]] = []
-    for h, sources in available_sources.items():
-        for src in sources:
-            pending_sources.append((src, h))
+    # Pre-sort all pending sources once for deterministic ordering
+    all_pending = sorted(
+        ((src, h) for h, sources in available_sources.items() for src in sources),
+        key=lambda x: x[0]
+    )
 
-    # Sort by source_path (primary key for operation order)
-    pending_sources.sort(key=lambda x: x[0])
+    # Track which (source_path, hash) pairs still require processing
+    pending_set = set(all_pending)
 
-    # Safety limit to prevent infinite loops in case of circular dependencies
-    max_passes = len(occupancy) + 10
-    pass_count = 0
+    # Safety limit to prevent infinite loops with circular dependencies
+    max_passes = len(all_pending) + 10
 
-    while pass_count < max_passes:
+    for _ in range(max_passes):
         ops_added = 0
-        for source_path, h in pending_sources:
-            # Check if source is still available (might be moved in this pass)
-            if source_path not in available_sources.get(h, set()):
+
+        for source_path, h in all_pending:
+            # Skip if already processed in a previous pass
+            if (source_path, h) not in pending_set:
                 continue
 
-            target_set = targets.get(h, set())
+            target_set = targets.get(h)
             if not target_set:
+                pending_set.discard((source_path, h))
                 continue
 
             # Find best target (sorted for determinism)
@@ -430,23 +430,20 @@ def _plan_moves(
                     # Plan the move operation
                     operations.append(('mv', source_path, target_path))
 
-                    # Update current occupancy state
-                    occupancy[source_path] = None  # Original path is now free
-                    occupancy[target_path] = h     # Target path is now occupied by this hash
+                    # Update occupancy state
+                    occupancy[source_path] = None
+                    occupancy[target_path] = h
 
-                    # Remove from working sets
-                    available_sources[h].remove(source_path)
-                    targets[h].remove(target_path)
-
+                    # Remove from working sets using discard for O(1) safe removal
+                    available_sources[h].discard(source_path)
+                    targets[h].discard(target_path)
+                    pending_set.discard((source_path, h))
                     ops_added += 1
-                    break  # Move to next source in this pass
+                    break
 
-        # If no moves were planned in this pass, we are done
-        # (or blocked by circular dependencies handled elsewhere)
-        if ops_added == 0:
+        # Early termination: no progress made or all items resolved
+        if ops_added == 0 or not pending_set:
             break
-
-        pass_count += 1
 
     return operations
 
