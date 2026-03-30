@@ -403,6 +403,11 @@ def _plan_moves(
         key=lambda x: x[0]
     )
 
+    # Pre-sort target sets once per hash for deterministic ordering
+    sorted_targets: Dict[str, List[str]] = {
+        h: sorted(paths) for h, paths in targets.items() if paths
+    }
+
     # Track which (source_path, hash) pairs still require processing
     pending_set = set(all_pending)
 
@@ -417,13 +422,17 @@ def _plan_moves(
             if (source_path, h) not in pending_set:
                 continue
 
-            target_set = targets.get(h)
-            if not target_set:
+            target_list = sorted_targets.get(h)
+            if not target_list:
                 pending_set.discard((source_path, h))
                 continue
 
             # Find best target (sorted for determinism)
-            for target_path in sorted(target_set):
+            for target_path in target_list:
+                # Skip if target already assigned in a previous pass
+                if target_path not in targets.get(h, set()):
+                    continue
+
                 # Check for conflicts at the target location
                 current_occupant = occupancy.get(target_path)
                 if current_occupant is None or current_occupant == h:
