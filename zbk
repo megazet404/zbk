@@ -627,7 +627,7 @@ def cmd_reorganize(args):
 
     # Ask for confirmation
     try:
-        response = input("\nExecute these operations? (Y/n): ")
+        response = input("\nExecute these operations? (y/n): ")
         if response.strip().upper() != 'Y':
             print("Cancelled.")
             return 0
