@@ -373,7 +373,7 @@ def _plan_moves(
     operations: List[Tuple[str, str, str]] = []
     
     # Identify hashes present in both source and destination
-    common_hashes = set(src_by_hash.keys()) & set(dest_by_hash.keys())
+    common_hashes = sorted(set(src_by_hash.keys()) & set(dest_by_hash.keys()))
     
     # Working sets: paths where files should go (targets) 
     # and where they currently exist (available_sources)
@@ -404,7 +404,7 @@ def _plan_moves(
     while pass_count < max_passes:
         ops_added = 0
         
-        for h in list(common_hashes):
+        for h in common_hashes:
             target_set = targets.get(h, set())
             source_set = available_sources.get(h, set())
             
