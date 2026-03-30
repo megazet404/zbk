@@ -151,7 +151,7 @@ class Index:
 def compute_hash(file_path: Path, log_callback=None) -> str:
     """Compute SHA-256 hash of a file."""
     if log_callback:
-        log_callback(f"[HASH] calculating: {file_path}")
+        log_callback(f"[HASH] calculating: {file_path}\n")
 
     sha256 = hashlib.sha256()
     with open(file_path, 'rb') as f:
