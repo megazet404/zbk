@@ -37,15 +37,15 @@ class ZBKError(Exception):
 
 class IndexRecord:
     """Represents a single record in the index."""
-    
-    def __init__(self, type_: str, relative_path: str, mtime: float, 
+
+    def __init__(self, type_: str, relative_path: str, mtime: float,
                  size: Optional[int] = None, hash_: str = ''):
         self.type = type_
         self.relative_path = relative_path
         self.mtime = mtime
         self.size = size
         self.hash = hash_
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'type': self.type,
@@ -54,15 +54,15 @@ class IndexRecord:
             'size': self.size if self.size is not None else '',
             'hash': self.hash
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, str]) -> 'IndexRecord':
         size_val = data.get('size', '')
         size = int(size_val) if size_val else None
-        
+
         mtime_val = data.get('mtime', '0')
         mtime = float(mtime_val) if mtime_val else 0.0
-        
+
         return cls(
             type_=data['type'],
             relative_path=data['relative_path'],
@@ -74,7 +74,7 @@ class IndexRecord:
 
 class Index:
     """Manages the index file with atomic writes and crash recovery."""
-    
+
     def __init__(self, index_path: Path, delimiter: str = DEFAULT_DELIMITER):
         self.index_path = index_path
         self.delimiter = delimiter
@@ -82,15 +82,15 @@ class Index:
         self.records: Dict[str, IndexRecord] = {}
         self._flush_timer = 0.0
         self._modified = False
-    
+
     def load(self) -> bool:
         """Load index from file. Returns True if file existed."""
         if self.index_path.exists():
             self._load_from_file(self.index_path)
             return True
-        
+
         return False
-    
+
     def _load_from_file(self, path: Path):
         """Load records from a CSV file."""
         with open(path, 'r', encoding='utf-8', newline='') as f:
@@ -100,48 +100,48 @@ class Index:
                 if row['relative_path']:  # Skip empty rows
                     record = IndexRecord.from_dict(row)
                     self.records[record.relative_path] = record
-    
+
     def add_record(self, record: IndexRecord):
         """Add or update a record."""
         self.records[record.relative_path] = record
         self._modified = True
-    
+
     def remove_record(self, relative_path: str):
         """Remove a record."""
         if relative_path in self.records:
             del self.records[relative_path]
             self._modified = True
-    
+
     def get_record(self, relative_path: str) -> Optional[IndexRecord]:
         """Get a record by path."""
         return self.records.get(relative_path)
-    
+
     def _atomic_write(self):
         """Atomically write index to disk."""
         tmp_path = self.index_path.with_suffix(self.index_path.suffix + TMP_SUFFIX)
-        
+
         with open(tmp_path, 'w', encoding='utf-8', newline='') as f:
             writer = csv.DictWriter(f, delimiter=self.delimiter, fieldnames=FIELDS)
             writer.writeheader()
-            
+
             # Sort records by path for consistent output
             for path in sorted(self.records.keys()):
                 writer.writerow(self.records[path].to_dict())
-            
+
             f.flush()
             os.fsync(f.fileno())
-        
+
         # Atomic rename
         tmp_path.replace(self.index_path)
         self._modified = False
-    
+
     def flush(self, force: bool = False):
         """Flush to disk if interval elapsed or forced."""
         current_time = time.time()
         if force or (self._modified and current_time - self._flush_timer >= FLUSH_INTERVAL):
             self._atomic_write()
             self._flush_timer = current_time
-    
+
     def save(self):
         """Final save."""
         if self._modified:
@@ -152,7 +152,7 @@ def compute_hash(file_path: Path, log_callback=None) -> str:
     """Compute SHA-256 hash of a file."""
     if log_callback:
         log_callback(f"[HASH] calculating: {file_path}")
-    
+
     sha256 = hashlib.sha256()
     with open(file_path, 'rb') as f:
         for chunk in iter(lambda: f.read(8192), b''):
@@ -173,7 +173,7 @@ def log_status(message: str, prev_len=[0]):
             sys.stderr.write('\n')
             prev_len[0] = 0
         sys.stderr.write(message)
-    
+
     sys.stderr.flush()
 
 
@@ -181,7 +181,7 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
                    delimiter: str = DEFAULT_DELIMITER) -> Index:
     """Scan directory and build/update index."""
     prev_len = [0]
-    
+
     def log(msg):
         nonlocal prev_len
         if msg.startswith('[DIR]'):
@@ -194,9 +194,9 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
                 prev_len[0] = 0
             sys.stderr.write(msg)
         sys.stderr.flush()
-    
+
     root_path = root_path.resolve()
-    
+
 
     # Track all paths found on disk
     found_paths = set()
@@ -206,7 +206,7 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
         dirpath = Path(dirpath)
         rel_dir = dirpath.relative_to(root_path)
         rel_dir_str = str(rel_dir).replace('\\', '/') if str(rel_dir) != '.' else ''
-        
+
         # Add directory record
         if rel_dir_str:
             dir_record_path = rel_dir_str + '/'
@@ -220,10 +220,10 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
             )
             index.add_record(record)
             found_paths.add(dir_record_path)
-        
+
         log(f"[DIR] scanning: {rel_dir_str}/" if rel_dir_str else "[DIR] scanning: ./")
         index.flush()
-        
+
         # Process files
         for filename in filenames:
             # Exclude the index file itself at the root level
@@ -231,20 +231,20 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
                 continue
 
             file_path = dirpath / filename
-            
+
             # Skip symlinks
             if file_path.is_symlink():
                 continue
-            
+
             rel_path = str(file_path.relative_to(root_path)).replace('\\', '/')
             stat_info = file_path.stat()
-            
+
             # Check existing record
             existing = index.get_record(rel_path)
-            
+
             if existing and not force:
                 # Check if file changed
-                if (existing.size == stat_info.st_size and 
+                if (existing.size == stat_info.st_size and
                     abs(existing.mtime - stat_info.st_mtime) < 0.001):
                     # No change, reuse hash
                     record = IndexRecord(
@@ -274,11 +274,11 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
                     size=stat_info.st_size,
                     hash_=file_hash
                 )
-            
+
             index.add_record(record)
             found_paths.add(rel_path)
             index.flush()
-    
+
 
     # Remove records for files/directories that no longer exist
     paths_to_remove = []
@@ -292,7 +292,7 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
     # Clear final status line
     sys.stderr.write('\n')
     sys.stderr.flush()
-    
+
     return index
 
 
@@ -302,7 +302,7 @@ def resolve_index_path(path_str: str, command: str) -> Tuple[Path, Path]:
     Returns (index_path, root_path).
     """
     path = Path(path_str)
-    
+
     if path.is_file():
         # Specified file is an index file
         index_path = path
@@ -320,7 +320,7 @@ def resolve_index_path(path_str: str, command: str) -> Tuple[Path, Path]:
             root_path = path
         else:
             raise ZBKError(f"Path does not exist: {path_str}")
-    
+
     return index_path, root_path
 
 
@@ -331,10 +331,10 @@ def cmd_update_index(args):
     except ZBKError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-    
+
     index = Index(index_path, args.delimiter)
     index.load()
-    
+
     try:
         scan_directory(root_path, index, args.force, args.delimiter)
         index.save()
@@ -367,37 +367,37 @@ def _plan_moves(
     Plan move operations iteratively to resolve path dependencies.
     This function determines how to move existing files in the destination
     to their new required paths based on content hashes.
-    
+
     Returns a list of ('mv', source_path, target_path).
     Order is prioritized by lexicographically sorted source paths.
     """
     operations: List[Tuple[str, str, str]] = []
-    
+
     # Identify hashes present in both source and destination
     common_hashes = set(src_by_hash.keys()) & set(dest_by_hash.keys())
-    
+
     # Working sets: paths where files should go (targets)
     # and where they currently exist (available_sources)
     targets: Dict[str, Set[str]] = {}
     available_sources: Dict[str, Set[str]] = {}
-    
+
     for h in common_hashes:
         target_paths = src_by_hash[h]
         current_paths = dest_by_hash[h]
-        
+
         # Files already in the correct location are excluded
         correct_paths = target_paths & current_paths
-        
+
         targets[h] = target_paths - correct_paths
         available_sources[h] = current_paths - correct_paths
-    
+
     # Track current occupancy: path -> hash (None if path is empty/freed)
     # This map helps avoid moving a file to a path occupied by another file
     occupancy: Dict[str, Optional[str]] = {}
     for dest_record in dest_index.records.values():
         if dest_record.type == 'file':
             occupancy[dest_record.relative_path] = dest_record.hash
-    
+
     # Create a sorted list of all pending sources to enforce source_path ordering
     pending_sources: List[Tuple[str, str]] = []
     for h, sources in available_sources.items():
@@ -410,7 +410,7 @@ def _plan_moves(
     # Safety limit to prevent infinite loops in case of circular dependencies
     max_passes = len(occupancy) + 10
     pass_count = 0
-    
+
     while pass_count < max_passes:
         ops_added = 0
         for source_path, h in pending_sources:
@@ -440,14 +440,14 @@ def _plan_moves(
 
                     ops_added += 1
                     break  # Move to next source in this pass
-        
+
         # If no moves were planned in this pass, we are done
         # (or blocked by circular dependencies handled elsewhere)
         if ops_added == 0:
             break
-            
+
         pass_count += 1
-    
+
     return operations
 
 def _plan_rmdirs(
@@ -456,16 +456,16 @@ def _plan_rmdirs(
     planned_moves: List[Tuple[str, str, str]]
 ) -> List[Tuple[str, str, str]]:
     """
-    Plan the removal of directories that exist in the current destination 
-    but are not present in the target index. 
+    Plan the removal of directories that exist in the current destination
+    but are not present in the target index.
     Only truly empty directories (after planned moves) are removed.
     """
     operations: List[Tuple[str, str, str]] = []
-    
+
     # Define directory sets based on Target (desired) and Current (actual) state
     target_dirs = {r.relative_path for r in target_index.records.values() if r.type == 'dir'}
     current_dirs = {r.relative_path for r in current_index.records.values() if r.type == 'dir'}
-    
+
     # Candidates for removal: directories in current that are NOT in target
     candidate_rmdirs = current_dirs - target_dirs
 
@@ -483,12 +483,12 @@ def _plan_rmdirs(
         if src_path in predicted_files:
             predicted_files.remove(src_path)
         predicted_files.add(dst_path)
-    
+
     # A directory is "occupied" and cannot be removed if:
     # 1. It will contain a file after moves.
     # 2. It is a required directory in the target state.
     occupied_dirs: Set[str] = set()
-    
+
     # Helper to mark all ancestors of a path as occupied
     def mark_ancestors(path: str):
         current = path
@@ -503,20 +503,20 @@ def _plan_rmdirs(
     # 1. Mark ancestors of predicted files
     for file_path in predicted_files:
         mark_ancestors(file_path)
-            
+
     # 2. Mark ancestors of directories we intend to keep
     for dir_path in target_dirs:
         occupied_dirs.add(dir_path) # The dir itself is occupied
         mark_ancestors(dir_path)    # And all its parents
-            
+
     # Sort candidates by depth (deepest first) to allow nested rmdir calls
     sorted_candidates = sorted(candidate_rmdirs, key=lambda x: x.count('/'), reverse=True)
-    
+
     for dir_path in sorted_candidates:
         if dir_path not in occupied_dirs:
             # If the directory is not required and has no predicted content, remove it
             operations.append(('rmdir', dir_path, ''))
-            
+
     return operations
 
 def plan_reorganize(src_index: Index, dest_index: Index) -> List[Tuple[str, str, str]]:
@@ -527,19 +527,19 @@ def plan_reorganize(src_index: Index, dest_index: Index) -> List[Tuple[str, str,
     # Build hash maps
     src_by_hash = _build_hash_maps(src_index)
     dest_by_hash = _build_hash_maps(dest_index)
-    
+
     # Plan moves
     mv_ops = _plan_moves(src_by_hash, dest_by_hash, dest_index)
-    
+
     # Plan directory removals
     rmdir_ops = _plan_rmdirs(src_index, dest_index, mv_ops)
-    
+
     # rmdir: by depth (already sorted in helper, but ensure consistency)
     rmdir_ops.sort(key=lambda x: x[1].count('/'), reverse=True)
-    
+
     return mv_ops + rmdir_ops
 
-def execute_reorganize(operations: List[Tuple[str, str, str]], 
+def execute_reorganize(operations: List[Tuple[str, str, str]],
                        dest_index: Index, dest_root: Path,
                        delimiter: str) -> int:
     """Execute reorganization operations."""
@@ -548,35 +548,35 @@ def execute_reorganize(operations: List[Tuple[str, str, str]],
             if op == 'mv':
                 src_file = dest_root / path1
                 dst_file = dest_root / path2
-                
+
                 # Create destination directory if needed
                 dst_file.parent.mkdir(parents=True, exist_ok=True)
-                
+
                 # Move file
                 src_file.rename(dst_file)
-                
+
                 # Update index
                 record = dest_index.get_record(path1)
                 if record:
                     record.relative_path = path2
                     dest_index.add_record(record)
                     dest_index.remove_record(path1)
-                
+
                 sys.stderr.write(f"mv: '{path1}' -> '{path2}'\n")
-            
+
             elif op == 'rmdir':
                 dir_path = dest_root / path1
                 if dir_path.exists() and dir_path.is_dir():
                     dir_path.rmdir()
                     dest_index.remove_record(path1)
                     sys.stderr.write(f"rmdir: '{path1}'\n")
-            
+
             dest_index.flush()
-            
+
         except Exception as e:
             sys.stderr.write(f"Error: {op} failed: {e}\n")
             continue
-    
+
     return 0
 
 
@@ -588,13 +588,13 @@ def cmd_reorganize(args):
     except ZBKError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-    
+
     # Load source index (read-only)
     src_index = Index(src_index_path, args.delimiter)
     if not src_index.load():
         print(f"Error: Source index not found: {src_index_path}", file=sys.stderr)
         return 1
-    
+
     # Pre-sync dest index if not skipped
     if not args.skip_index_update:
         sys.stderr.write("Pre-syncing destination index...\n")
@@ -610,14 +610,14 @@ def cmd_reorganize(args):
     else:
         dest_index = Index(dest_index_path, args.delimiter)
         dest_index.load()
-    
+
     # Plan operations
     operations = plan_reorganize(src_index, dest_index)
-    
+
     if not operations:
         print("No reorganization needed.")
         return 0
-    
+
     # Print plan to stdout
     print("Planned operations:")
     for op, path1, path2 in operations:
@@ -625,7 +625,7 @@ def cmd_reorganize(args):
             print(f"mv: '{path1}' -> '{path2}'")
         elif op == 'rmdir':
             print(f"rmdir: '{path1}'")
-    
+
     # Ask for confirmation
     try:
         response = input("\nExecute these operations? (Y/n): ")
@@ -635,7 +635,7 @@ def cmd_reorganize(args):
     except KeyboardInterrupt:
         print("\nCancelled.")
         return 130
-    
+
     # Execute operations
     try:
         result = execute_reorganize(operations, dest_index, dest_root, args.delimiter)
@@ -650,51 +650,51 @@ def cmd_reorganize(args):
         return 1
 
 
-def plan_push(src_index: Index, dest_index: Index, 
+def plan_push(src_index: Index, dest_index: Index,
               src_root: Path, dest_root: Path) -> List[Tuple[str, str, str]]:
     """
     Plan push operations.
     Returns list of (operation, src_path, dest_path).
     """
     operations = []
-    
+
     src_files = {r.relative_path: r for r in src_index.records.values() if r.type == 'file'}
     dest_files = {r.relative_path: r for r in dest_index.records.values() if r.type == 'file'}
     src_dirs = {r.relative_path for r in src_index.records.values() if r.type == 'dir'}
     dest_dirs = {r.relative_path for r in dest_index.records.values() if r.type == 'dir'}
-    
+
     # Files to copy or update
     for src_path, src_record in src_files.items():
         dest_record = dest_files.get(src_path)
-        
+
         if not dest_record:
             # New file - copy
             operations.append(('cp', src_path, src_path))
-        elif (src_record.size != dest_record.size or 
+        elif (src_record.size != dest_record.size or
               src_record.hash != dest_record.hash):
             # Changed file - update
             operations.append(('upd', src_path, src_path))
         elif abs(src_record.mtime - dest_record.mtime) > 0.001:
             # Same content, different mtime - touch
             operations.append(('touch', src_path, src_path))
-    
+
     # Files to remove (in dest but not in src)
     for dest_path in sorted(dest_files.keys() - src_files.keys(), reverse=True):
         operations.append(('rm', '', dest_path))
-    
+
     # Directories to remove (in dest but not in src)
     # Process from deepest to shallowest
-    dirs_to_remove = sorted(dest_dirs - src_dirs, 
+    dirs_to_remove = sorted(dest_dirs - src_dirs,
                            key=lambda x: x.count('/'), reverse=True)
     for dir_path in dirs_to_remove:
         # Check if directory is empty
         has_contents = any(
-            p.startswith(dir_path) and p != dir_path 
+            p.startswith(dir_path) and p != dir_path
             for p in dest_files.keys() | dest_dirs
         )
         if not has_contents:
             operations.append(('rmdir', '', dir_path))
-    
+
     return operations
 
 
@@ -707,22 +707,22 @@ def execute_push(operations: List[Tuple[str, str, str]],
     cp_upd_touch = [(op, s, d) for op, s, d in operations if op in ('cp', 'upd', 'touch')]
     rm_ops = [(op, s, d) for op, s, d in operations if op == 'rm']
     rmdir_ops = [(op, s, d) for op, s, d in operations if op == 'rmdir']
-    
+
     # Execute in order: cp/upd/touch, then rm, then rmdir
     all_ordered = cp_upd_touch + rm_ops + rmdir_ops
-    
+
     for op, src_path, dest_path in all_ordered:
         try:
             if op in ('cp', 'upd'):
                 src_file = src_root / src_path
                 dst_file = dest_root / dest_path
-                
+
                 # Create destination directory if needed
                 dst_file.parent.mkdir(parents=True, exist_ok=True)
-                
+
                 # Copy file
                 shutil.copy2(src_file, dst_file)
-                
+
                 # Update index
                 src_record = src_index.get_record(src_path)
                 if src_record:
@@ -734,44 +734,44 @@ def execute_push(operations: List[Tuple[str, str, str]],
                         hash_=src_record.hash
                     )
                     dest_index.add_record(dest_record)
-                
+
                 sys.stderr.write(f"{op}: '{src_path}' -> '{dest_path}'\n")
-            
+
             elif op == 'touch':
                 dst_file = dest_root / dest_path
                 src_record = src_index.get_record(src_path)
-                
+
                 # Update mtime
                 os.utime(dst_file, (src_record.mtime, src_record.mtime))
-                
+
                 # Update index
                 dest_record = dest_index.get_record(dest_path)
                 if dest_record:
                     dest_record.mtime = src_record.mtime
                     dest_index.add_record(dest_record)
-                
+
                 sys.stderr.write(f"touch: '{dest_path}'\n")
-            
+
             elif op == 'rm':
                 dst_file = dest_root / dest_path
                 if dst_file.exists():
                     dst_file.unlink()
                 dest_index.remove_record(dest_path)
                 sys.stderr.write(f"rm: '{dest_path}'\n")
-            
+
             elif op == 'rmdir':
                 dir_path = dest_root / dest_path
                 if dir_path.exists() and dir_path.is_dir():
                     dir_path.rmdir()
                 dest_index.remove_record(dest_path)
                 sys.stderr.write(f"rmdir: '{dest_path}'\n")
-            
+
             dest_index.flush()
-            
+
         except Exception as e:
             sys.stderr.write(f"Error: {op} failed: {e}\n")
             continue
-    
+
     return 0
 
 
@@ -783,13 +783,13 @@ def cmd_push(args):
     except ZBKError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-    
+
     # Load source index (read-only)
     src_index = Index(src_index_path, args.delimiter)
     if not src_index.load():
         print(f"Error: Source index not found: {src_index_path}", file=sys.stderr)
         return 1
-    
+
     # Pre-sync dest index if not skipped
     if not args.skip_index_update:
         sys.stderr.write("Pre-syncing destination index...\n")
@@ -805,14 +805,14 @@ def cmd_push(args):
     else:
         dest_index = Index(dest_index_path, args.delimiter)
         dest_index.load()
-    
+
     # Plan operations
     operations = plan_push(src_index, dest_index, src_root, dest_root)
-    
+
     if not operations:
         print("No synchronization needed.")
         return 0
-    
+
     # Print plan to stdout
     print("Planned operations:")
     for op, src_path, dest_path in operations:
@@ -824,7 +824,7 @@ def cmd_push(args):
             print(f"rm: '{dest_path}'")
         elif op == 'rmdir':
             print(f"rmdir: '{dest_path}'")
-    
+
     # Ask for confirmation
     try:
         response = input("\nExecute these operations? (Y/n): ")
@@ -834,10 +834,10 @@ def cmd_push(args):
     except KeyboardInterrupt:
         print("\nCancelled.")
         return 130
-    
+
     # Execute operations
     try:
-        result = execute_push(operations, src_index, dest_index, 
+        result = execute_push(operations, src_index, dest_index,
                              src_root, dest_root, args.delimiter)
         dest_index.save()
         return result
@@ -856,9 +856,9 @@ def main():
         description='Incremental backup utility'
     )
     subparsers = parser.add_subparsers(dest='command', help='Commands')
-    
+
     # update-index command
-    update_parser = subparsers.add_parser('update-index', 
+    update_parser = subparsers.add_parser('update-index',
                                           help='Build index of directory metadata')
     update_parser.add_argument('--root', required=True,
                                help='Path to index to be updated')
@@ -866,7 +866,7 @@ def main():
                                help='Force recalculation of all hashes')
     update_parser.add_argument('--delimiter', default=DEFAULT_DELIMITER,
                                help=f'CSV delimiter (default: {DEFAULT_DELIMITER})')
-    
+
     # reorganize command
     reorg_parser = subparsers.add_parser('reorganize',
                                          help='Reorganize destination structure')
@@ -878,7 +878,7 @@ def main():
                               help='Skip pre-sync of destination index')
     reorg_parser.add_argument('--delimiter', default=DEFAULT_DELIMITER,
                               help=f'CSV delimiter (default: {DEFAULT_DELIMITER})')
-    
+
     # push command
     push_parser = subparsers.add_parser('push',
                                         help='Synchronize destination with source')
@@ -890,9 +890,9 @@ def main():
                              help='Skip pre-sync of destination index')
     push_parser.add_argument('--delimiter', default=DEFAULT_DELIMITER,
                              help=f'CSV delimiter (default: {DEFAULT_DELIMITER})')
-    
+
     args = parser.parse_args()
-    
+
     if args.command == 'update-index':
         return cmd_update_index(args)
     elif args.command == 'reorganize':
