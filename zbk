@@ -431,7 +431,7 @@ def _plan_moves(
             for target_path in target_list:
                 # Check for conflicts at the target location using occupancy only
                 current_occupant = occupancy.get(target_path)
-                if current_occupant is None or current_occupant == h:
+                if current_occupant is None:
                     # Plan the move operation
                     operations.append(('mv', source_path, target_path))
 
