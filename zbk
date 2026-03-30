@@ -429,11 +429,7 @@ def _plan_moves(
 
             # Find best target (sorted for determinism)
             for target_path in target_list:
-                # Skip if target already assigned in a previous pass
-                if target_path not in targets.get(h, set()):
-                    continue
-
-                # Check for conflicts at the target location
+                # Check for conflicts at the target location using occupancy only
                 current_occupant = occupancy.get(target_path)
                 if current_occupant is None or current_occupant == h:
                     # Plan the move operation
