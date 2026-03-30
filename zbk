@@ -365,17 +365,18 @@ def _plan_moves(
 ) -> List[Tuple[str, str, str]]:
     """
     Plan move operations iteratively to resolve path dependencies.
-    This function determines how to move existing files in the destination 
+    This function determines how to move existing files in the destination
     to their new required paths based on content hashes.
     
     Returns a list of ('mv', source_path, target_path).
+    Order is prioritized by lexicographically sorted source paths.
     """
     operations: List[Tuple[str, str, str]] = []
     
     # Identify hashes present in both source and destination
-    common_hashes = sorted(set(src_by_hash.keys()) & set(dest_by_hash.keys()))
+    common_hashes = set(src_by_hash.keys()) & set(dest_by_hash.keys())
     
-    # Working sets: paths where files should go (targets) 
+    # Working sets: paths where files should go (targets)
     # and where they currently exist (available_sources)
     targets: Dict[str, Set[str]] = {}
     available_sources: Dict[str, Set[str]] = {}
@@ -397,49 +398,50 @@ def _plan_moves(
         if dest_record.type == 'file':
             occupancy[dest_record.relative_path] = dest_record.hash
     
+    # Create a sorted list of all pending sources to enforce source_path ordering
+    pending_sources: List[Tuple[str, str]] = []
+    for h, sources in available_sources.items():
+        for src in sources:
+            pending_sources.append((src, h))
+
+    # Sort by source_path (primary key for operation order)
+    pending_sources.sort(key=lambda x: x[0])
+
     # Safety limit to prevent infinite loops in case of circular dependencies
     max_passes = len(occupancy) + 10
     pass_count = 0
     
     while pass_count < max_passes:
         ops_added = 0
-        
-        for h in common_hashes:
-            target_set = targets.get(h, set())
-            source_set = available_sources.get(h, set())
-            
-            if not target_set or not source_set:
+        for source_path, h in pending_sources:
+            # Check if source is still available (might be moved in this pass)
+            if source_path not in available_sources.get(h, set()):
                 continue
-            
-            # Sort target paths for deterministic behavior across runs
+
+            target_set = targets.get(h, set())
+            if not target_set:
+                continue
+
+            # Find best target (sorted for determinism)
             for target_path in sorted(target_set):
-                if not source_set:
-                    break
-                
                 # Check for conflicts at the target location
                 current_occupant = occupancy.get(target_path)
-                if current_occupant is not None and current_occupant != h:
-                    # Target path is currently occupied by a different file.
-                    # We must wait for that file to be moved or deleted first.
-                    continue
-                
-                # Pick a source file to move (min() ensures determinism)
-                source_path = min(source_set)
-                
-                # Plan the move operation
-                operations.append(('mv', source_path, target_path))
-                
-                # Update current occupancy state
-                occupancy[source_path] = None  # Original path is now free
-                occupancy[target_path] = h     # Target path is now occupied by this hash
-                
-                # Remove from working sets
-                source_set.remove(source_path)
-                target_set.remove(target_path)
-                
-                ops_added += 1
+                if current_occupant is None or current_occupant == h:
+                    # Plan the move operation
+                    operations.append(('mv', source_path, target_path))
+
+                    # Update current occupancy state
+                    occupancy[source_path] = None  # Original path is now free
+                    occupancy[target_path] = h     # Target path is now occupied by this hash
+
+                    # Remove from working sets
+                    available_sources[h].remove(source_path)
+                    targets[h].remove(target_path)
+
+                    ops_added += 1
+                    break  # Move to next source in this pass
         
-        # If no moves were planned in this pass, we are done 
+        # If no moves were planned in this pass, we are done
         # (or blocked by circular dependencies handled elsewhere)
         if ops_added == 0:
             break
