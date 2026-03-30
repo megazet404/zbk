@@ -391,11 +391,11 @@ def _plan_moves(
         targets[h] = target_paths - correct_paths
         available_sources[h] = current_paths - correct_paths
 
-    # Track current occupancy: path -> hash (None if path is empty/freed)
-    occupancy: Dict[str, Optional[str]] = {}
-    for dest_record in dest_index.records.values():
-        if dest_record.type == 'file':
-            occupancy[dest_record.relative_path] = dest_record.hash
+    # Track current occupancy: set of occupied paths
+    occupancy: Set[str] = {
+        r.relative_path for r in dest_index.records.values()
+        if r.type == 'file'
+    }
 
     # Pre-sort all pending sources once for deterministic ordering
     all_pending = sorted(
@@ -429,15 +429,15 @@ def _plan_moves(
 
             # Find best target (sorted for determinism)
             for target_path in target_list:
-                # Check for conflicts at the target location using occupancy only
-                current_occupant = occupancy.get(target_path)
-                if current_occupant is None:
+                # Check for conflicts at the target location
+                # Target must be free (not in occupancy set)
+                if target_path not in occupancy:
                     # Plan the move operation
                     operations.append(('mv', source_path, target_path))
 
                     # Update occupancy state
-                    occupancy[source_path] = None
-                    occupancy[target_path] = h
+                    occupancy.discard(source_path)
+                    occupancy.add(target_path)
 
                     # Remove from working sets using discard for O(1) safe removal
                     available_sources[h].discard(source_path)
@@ -446,9 +446,9 @@ def _plan_moves(
                     ops_added += 1
                     break
 
-        # Early termination: no progress made or all items resolved
-        if ops_added == 0 or not pending_set:
-            break
+            # Early termination: no progress made or all items resolved
+            if ops_added == 0 or not pending_set:
+                break
 
     return operations
 
