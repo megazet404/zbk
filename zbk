@@ -484,7 +484,7 @@ def _plan_rmdirs(
     for _, src_path, dst_path in planned_moves:
         if src_path in predicted_files:
             predicted_files.remove(src_path)
-        predicted_files.add(dst_path)
+            predicted_files.add(dst_path)
 
     # A directory is "occupied" and cannot be removed if:
     # 1. It will contain a file after moves.
@@ -511,8 +511,8 @@ def _plan_rmdirs(
         occupied_dirs.add(dir_path) # The dir itself is occupied
         mark_ancestors(dir_path)    # And all its parents
 
-    # Sort candidates by depth (deepest first) to allow nested rmdir calls
-    sorted_candidates = sorted(candidate_rmdirs, key=lambda x: x.count('/'), reverse=True)
+    # Sort by depth (deepest first), then alphabetically for deterministic order
+    sorted_candidates = sorted(candidate_rmdirs, key=lambda x: (-x.count('/'), x))
 
     for dir_path in sorted_candidates:
         if dir_path not in occupied_dirs:
@@ -535,9 +535,6 @@ def plan_reorganize(src_index: Index, dest_index: Index) -> List[Tuple[str, str,
 
     # Plan directory removals
     rmdir_ops = _plan_rmdirs(src_index, dest_index, mv_ops)
-
-    # rmdir: by depth (already sorted in helper, but ensure consistency)
-    rmdir_ops.sort(key=lambda x: x[1].count('/'), reverse=True)
 
     return mv_ops + rmdir_ops
 
