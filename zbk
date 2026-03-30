@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple, Any
 
 # Constants
 DEFAULT_DELIMITER = ','
-FLUSH_INTERVAL = 5  # seconds
+FLUSH_INTERVAL = 30  # seconds
 INDEX_FILENAME = 'index.csv'
 TMP_SUFFIX = '.tmp'
 
