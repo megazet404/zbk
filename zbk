@@ -532,9 +532,6 @@ def plan_reorganize(src_index: Index, dest_index: Index) -> List[Tuple[str, str,
     # Plan directory removals
     rmdir_ops = _plan_rmdirs(src_index, dest_index, mv_ops)
     
-    # Sort operations
-    # mv: by source path (path_from)
-    mv_ops.sort(key=lambda x: x[1])
     # rmdir: by depth (already sorted in helper, but ensure consistency)
     rmdir_ops.sort(key=lambda x: x[1].count('/'), reverse=True)
     
