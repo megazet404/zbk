@@ -816,7 +816,7 @@ def cmd_push(args):
     print("Planned operations:")
     for op, src_path, dest_path in operations:
         if op in ('cp', 'upd'):
-            print(f"{op}: '{src_path}' -> '{dest_path}'")
+            print(f"{op}: '{src_path}'")
         elif op == 'touch':
             print(f"touch: '{dest_path}'")
         elif op == 'rm':
