@@ -662,6 +662,12 @@ def plan_push(src_index: Index, dest_index: Index,
     src_dirs = {r.relative_path for r in src_index.records.values() if r.type == 'dir'}
     dest_dirs = {r.relative_path for r in dest_index.records.values() if r.type == 'dir'}
 
+    # Directories to create (in src but not in dest)
+    # Sort shallowest first to ensure parents exist
+    dirs_to_create = sorted(src_dirs - dest_dirs, key=lambda x: x.count('/'))
+    for dir_path in dirs_to_create:
+        operations.append(('mkdir', '', dir_path))
+
     # Files to copy or update
     for src_path, src_record in src_files.items():
         dest_record = dest_files.get(src_path)
@@ -681,25 +687,18 @@ def plan_push(src_index: Index, dest_index: Index,
     for dest_path in sorted(dest_files.keys() - src_files.keys(), reverse=True):
         operations.append(('rm', '', dest_path))
 
-    # Directories to create: in src but not in dest
-    missing_dirs = src_dirs - dest_dirs
-    # Sort by depth (shallowest first) to ensure parents are created before children
-    dirs_to_create = sorted(missing_dirs, key=lambda x: x.count('/'))
-    for dir_path in dirs_to_create:
-        operations.append(('mkdir', '', dir_path))
-
     # Directories to remove (in dest but not in src)
-    # Process from deepest to shallowest
+    # Sort deepest first to ensure children are removed before parents
+    # Logic fix: Check against src state, not dest state.
+    # If dir is not in src_dirs, src has no content inside it.
+    # All content in dest inside this dir is scheduled for removal (rm or rmdir).
     dirs_to_remove = sorted(dest_dirs - src_dirs,
                            key=lambda x: x.count('/'), reverse=True)
     for dir_path in dirs_to_remove:
-        # Check if directory is empty
-        has_contents = any(
-            p.startswith(dir_path) and p != dir_path
-            for p in dest_files.keys() | dest_dirs
-        )
-        if not has_contents:
-            operations.append(('rmdir', '', dir_path))
+        # Safety check: never remove root
+        if dir_path in ('', '/', '.', './'):
+            continue
+        operations.append(('rmdir', '', dir_path))
 
     return operations
 
@@ -715,12 +714,27 @@ def execute_push(operations: List[Tuple[str, str, str]],
     rm_ops = [(op, s, d) for op, s, d in operations if op == 'rm']
     rmdir_ops = [(op, s, d) for op, s, d in operations if op == 'rmdir']
 
-    # Execute in order: mkdir_ops, then cp/upd/touch, then rm, then rmdir
+    # Execute in order: mkdir, cp/upd/touch, rm, rmdir
     all_ordered = mkdir_ops + cp_upd_touch + rm_ops + rmdir_ops
 
     for op, src_path, dest_path in all_ordered:
         try:
-            if op in ('cp', 'upd'):
+            if op == 'mkdir':
+                dir_path = dest_root / dest_path
+                dir_path.mkdir(parents=True, exist_ok=True)
+                # Update index: add directory record
+                stat_info = dir_path.stat()
+                record = IndexRecord(
+                    type_='dir',
+                    relative_path=dest_path,
+                    mtime=stat_info.st_mtime,
+                    size=None,
+                    hash_=''
+                )
+                dest_index.add_record(record)
+                sys.stderr.write(f"mkdir: '{dest_path}'\n")
+
+            elif op in ('cp', 'upd'):
                 src_file = src_root / src_path
                 dst_file = dest_root / dest_path
 
@@ -758,22 +772,6 @@ def execute_push(operations: List[Tuple[str, str, str]],
                     dest_index.add_record(dest_record)
 
                 sys.stderr.write(f"touch: '{dest_path}'\n")
-
-            elif op == 'mkdir':
-                dir_path = dest_root / dest_path
-                # Parents guaranteed to exist due to sorting in plan_push
-                dir_path.mkdir(parents=False, exist_ok=True)
-                # Update index: add directory record
-                stat_info = dir_path.stat()
-                record = IndexRecord(
-                    type_='dir',
-                    relative_path=dest_path,
-                    mtime=stat_info.st_mtime,
-                    size=None,
-                    hash_=''
-                )
-                dest_index.add_record(record)
-                sys.stderr.write(f"mkdir: '{dest_path}'\n")
 
             elif op == 'rm':
                 dst_file = dest_root / dest_path
@@ -839,7 +837,9 @@ def cmd_push(args):
     # Print plan to stdout
     print("Planned operations:")
     for op, src_path, dest_path in operations:
-        if op in ('cp', 'upd'):
+        if op == 'mkdir':
+            print(f"mkdir: '{dest_path}'")
+        elif op in ('cp', 'upd'):
             print(f"{op}: '{src_path}'")
         elif op == 'touch':
             print(f"touch: '{dest_path}'")
@@ -847,8 +847,6 @@ def cmd_push(args):
             print(f"rm: '{dest_path}'")
         elif op == 'rmdir':
             print(f"rmdir: '{dest_path}'")
-        elif op == 'mkdir':
-            print(f"mkdir: '{dest_path}'")
 
     # Ask for confirmation
     try:
