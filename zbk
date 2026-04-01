@@ -82,10 +82,12 @@ class Index:
         self.records: Dict[str, IndexRecord] = {}
         self._flush_timer = 0.0
         self._modified = False
+        self._exists = False
 
     def load(self) -> bool:
         """Load index from file. Returns True if file existed."""
         if self.index_path.exists():
+            self._exists = True
             self._load_from_file(self.index_path)
             return True
 
@@ -144,7 +146,7 @@ class Index:
 
     def save(self):
         """Final save."""
-        if self._modified:
+        if self._modified or not self._exists:
             self._atomic_write()
 
 
@@ -313,13 +315,7 @@ def resolve_index_path(path_str: str, command: str) -> Tuple[Path, Path]:
         root_path = path
     else:
         # Path doesn't exist
-        if command == 'update-index':
-            # Create new index - treat as directory
-            path.mkdir(parents=True, exist_ok=True)
-            index_path = path / INDEX_FILENAME
-            root_path = path
-        else:
-            raise ZBKError(f"Path does not exist: {path_str}")
+        raise ZBKError(f"Path does not exist: {path_str}")
 
     return index_path, root_path
 
