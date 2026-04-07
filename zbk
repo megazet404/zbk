@@ -181,119 +181,69 @@ def log_status(message: str, prev_len=[0]):
 
 def scan_directory(root_path: Path, index: Index, force: bool = False,
                    delimiter: str = DEFAULT_DELIMITER) -> Index:
-    """Scan directory and build/update index."""
-    prev_len = [0]
-
-    def log(msg):
-        nonlocal prev_len
-        if msg.startswith('[DIR]'):
-            spaces_needed = max(0, prev_len[0] - len(msg))
-            sys.stderr.write('\r' + msg + ' ' * spaces_needed)
-            prev_len[0] = len(msg)
-        else:
-            if prev_len[0] > 0:
-                sys.stderr.write('\n')
-                prev_len[0] = 0
-            sys.stderr.write(msg)
-        sys.stderr.flush()
-
-    root_path = root_path.resolve()
-
-
-    # Track all paths found on disk
+    root_str = str(root_path.resolve())
     found_paths = set()
 
-    # Walk directory tree
-    for dirpath, dirnames, filenames in os.walk(root_path, followlinks=False):
-        dirpath = Path(dirpath)
-        rel_dir = dirpath.relative_to(root_path)
-        rel_dir_str = str(rel_dir).replace('\\', '/') if str(rel_dir) != '.' else ''
+    def _process_dir(current_dir_str):
+        try:
+            with os.scandir(current_dir_str) as it:
+                for entry in it:
+                    # Вычисляем относительный путь один раз
+                    rel_path = os.path.relpath(entry.path, root_str).replace('\\', '/')
 
-        # Add directory record
-        if rel_dir_str:
-            dir_record_path = rel_dir_str + '/'
-            stat_info = dirpath.stat()
-            record = IndexRecord(
-                type_='dir',
-                relative_path=dir_record_path,
-                mtime=stat_info.st_mtime,
-                size=None,
-                hash_=''
-            )
-            index.add_record(record)
-            found_paths.add(dir_record_path)
+                    if entry.is_dir():
+                        dir_rel_path = rel_path + '/'
+                        found_paths.add(dir_rel_path)
 
-        log(f"[DIR] scanning: {rel_dir_str}/" if rel_dir_str else "[DIR] scanning: ./")
-        index.flush()
+                        # Метаданные директории
+                        stat = entry.stat()
+                        index.add_record(IndexRecord(
+                            type_='dir',
+                            relative_path=dir_rel_path,
+                            mtime=stat.st_mtime
+                        ))
 
-        # Process files
-        for filename in filenames:
-            # Exclude the index file itself at the root level
-            if filename == INDEX_FILENAME and dirpath == root_path:
-                continue
+                        log_status(f"[DIR] scanning: {dir_rel_path}")
+                        _process_dir(entry.path)
 
-            file_path = dirpath / filename
+                    elif entry.is_file():
+                        if entry.name == INDEX_FILENAME and os.path.dirname(entry.path) == root_str:
+                            continue
 
-            # Skip symlinks
-            if file_path.is_symlink():
-                continue
+                        found_paths.add(rel_path)
+                        stat = entry.stat() # DirEntry.stat() обычно не делает системный вызов повторно
 
-            rel_path = str(file_path.relative_to(root_path)).replace('\\', '/')
-            stat_info = file_path.stat()
+                        existing = index.get_record(rel_path)
 
-            # Check existing record
-            existing = index.get_record(rel_path)
+                        # Логика сравнения
+                        if existing and not force and \
+                           existing.size == stat.st_size and \
+                           abs(existing.mtime - stat.st_mtime) < 0.001:
+                            # Используем существующий хэш без чтения файла
+                            file_hash = existing.hash
+                        else:
+                            file_hash = compute_hash(Path(entry.path), log_status)
 
-            if existing and not force:
-                # Check if file changed
-                if (existing.size == stat_info.st_size and
-                    abs(existing.mtime - stat_info.st_mtime) < 0.001):
-                    # No change, reuse hash
-                    record = IndexRecord(
-                        type_='file',
-                        relative_path=rel_path,
-                        mtime=stat_info.st_mtime,
-                        size=stat_info.st_size,
-                        hash_=existing.hash
-                    )
-                else:
-                    # File changed, recompute hash
-                    file_hash = compute_hash(file_path, log)
-                    record = IndexRecord(
-                        type_='file',
-                        relative_path=rel_path,
-                        mtime=stat_info.st_mtime,
-                        size=stat_info.st_size,
-                        hash_=file_hash
-                    )
-            else:
-                # New file or force mode
-                file_hash = compute_hash(file_path, log)
-                record = IndexRecord(
-                    type_='file',
-                    relative_path=rel_path,
-                    mtime=stat_info.st_mtime,
-                    size=stat_info.st_size,
-                    hash_=file_hash
-                )
+                        index.add_record(IndexRecord(
+                            type_='file',
+                            relative_path=rel_path,
+                            mtime=stat.st_mtime,
+                            size=stat.st_size,
+                            hash_=file_hash
+                        ))
 
-            index.add_record(record)
-            found_paths.add(rel_path)
-            index.flush()
+                    index.flush()
 
+        except PermissionError:
+            pass
 
-    # Remove records for files/directories that no longer exist
-    paths_to_remove = []
-    for record_path in index.records.keys():
-        if record_path not in found_paths:
-            paths_to_remove.append(record_path)
+    log_status(f"[DIR] scanning: ")
+    _process_dir(root_str)
 
-    for path in paths_to_remove:
-        index.remove_record(path)
-
-    # Clear final status line
-    sys.stderr.write('\n')
-    sys.stderr.flush()
+    # Удаление отсутствующих
+    for path in list(index.records.keys()):
+        if path not in found_paths:
+            index.remove_record(path)
 
     return index
 
