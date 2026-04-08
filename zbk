@@ -606,6 +606,14 @@ def plan_push(src_index: Index, dest_index: Index,
     Returns list of (operation, src_path, dest_path).
     """
     operations = []
+    dirs_to_touch = set()
+
+    def mark_parent_modified(path: str):
+        clean_path = path.rstrip('/')
+        if '/' in clean_path:
+            parent = clean_path.rsplit('/', 1)[0] + '/'
+            if parent in src_dirs:
+                dirs_to_touch.add(parent)
 
     src_files = {r.relative_path: r for r in src_index.records.values() if r.type == 'file'}
     dest_files = {r.relative_path: r for r in dest_index.records.values() if r.type == 'file'}
@@ -617,6 +625,8 @@ def plan_push(src_index: Index, dest_index: Index,
     dirs_to_create = sorted(src_dirs - dest_dirs, key=lambda x: x.count('/'))
     for dir_path in dirs_to_create:
         operations.append(('mkdir', '', dir_path))
+        dirs_to_touch.add(dir_path)
+        mark_parent_modified(dir_path)
 
     # Files to copy or update
     for src_path, src_record in src_files.items():
@@ -625,10 +635,12 @@ def plan_push(src_index: Index, dest_index: Index,
         if not dest_record:
             # New file - copy
             operations.append(('cp', src_path, src_path))
+            mark_parent_modified(src_path)
         elif (src_record.size != dest_record.size or
               src_record.hash != dest_record.hash):
             # Changed file - update
             operations.append(('upd', src_path, src_path))
+            mark_parent_modified(src_path)
         elif abs(src_record.mtime - dest_record.mtime) > 0.001:
             # Same content, different mtime - touch
             operations.append(('touch', src_path, src_path))
@@ -636,12 +648,10 @@ def plan_push(src_index: Index, dest_index: Index,
     # Files to remove (in dest but not in src)
     for dest_path in sorted(dest_files.keys() - src_files.keys(), reverse=True):
         operations.append(('rm', '', dest_path))
+        mark_parent_modified(dest_path)
 
     # Directories to remove (in dest but not in src)
     # Sort deepest first to ensure children are removed before parents
-    # Logic fix: Check against src state, not dest state.
-    # If dir is not in src_dirs, src has no content inside it.
-    # All content in dest inside this dir is scheduled for removal (rm or rmdir).
     dirs_to_remove = sorted(dest_dirs - src_dirs,
                            key=lambda x: x.count('/'), reverse=True)
     for dir_path in dirs_to_remove:
@@ -649,6 +659,18 @@ def plan_push(src_index: Index, dest_index: Index,
         if dir_path in ('', '/', '.', './'):
             continue
         operations.append(('rmdir', '', dir_path))
+        mark_parent_modified(dir_path)
+
+    # Existing directories with mtime mismatch
+    for dir_path in src_dirs & dest_dirs:
+        src_record = src_index.get_record(dir_path)
+        dest_record = dest_index.get_record(dir_path)
+        if abs(src_record.mtime - dest_record.mtime) > 0.001:
+            dirs_to_touch.add(dir_path)
+
+    # Add touch operations for directories, ordered deepest first
+    for dir_path in sorted(dirs_to_touch, key=lambda x: x.count('/'), reverse=True):
+        operations.append(('touch', dir_path, dir_path))
 
     return operations
 
@@ -660,12 +682,13 @@ def execute_push(operations: List[Tuple[str, str, str]],
     """Execute push operations."""
     # Separate operations by type for proper ordering
     mkdir_ops = [(op, s, d) for op, s, d in operations if op == 'mkdir']
-    cp_upd_touch = [(op, s, d) for op, s, d in operations if op in ('cp', 'upd', 'touch')]
+    cp_upd_ops = [(op, s, d) for op, s, d in operations if op in ('cp', 'upd')]
     rm_ops = [(op, s, d) for op, s, d in operations if op == 'rm']
     rmdir_ops = [(op, s, d) for op, s, d in operations if op == 'rmdir']
+    touch_ops = [(op, s, d) for op, s, d in operations if op == 'touch']
 
-    # Execute in order: mkdir, cp/upd/touch, rm, rmdir
-    all_ordered = mkdir_ops + cp_upd_touch + rm_ops + rmdir_ops
+    # Execute in order: mkdir, cp/upd, rm, rmdir, touch
+    all_ordered = mkdir_ops + cp_upd_ops + rm_ops + rmdir_ops + touch_ops
 
     for op, src_path, dest_path in all_ordered:
         try:
