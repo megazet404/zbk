@@ -245,6 +245,10 @@ def scan_directory(root_path: Path, index: Index, force: bool = False,
         if path not in found_paths:
             index.remove_record(path)
 
+    # Clear final status line
+    sys.stderr.write('\n')
+    sys.stderr.flush()
+
     return index
 
 
